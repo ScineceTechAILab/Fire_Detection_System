@@ -18,6 +18,9 @@ FireDetectionSystem/
 │       └── detector.py    # [待实现] YOLO 模型加载与推理逻辑
 ├── output/                # 💾 结果保存
 │   └── captured_imgs/     # 存放检测到火灾时的自动截图
+├── test/
+│   ├── test_communication/ # 通信模块单元测试
+│   └── test_imgs           # 测试图片
 ├── utils/                 # 🛠️ 通用工具包
 │   └── logger.py          # [可选] 日志记录工具
 ├── weights/               # 🧠 模型权重文件
@@ -38,17 +41,9 @@ FireDetectionSystem/
 pip install -r requirements.txt
 ```
 
-> **建议的 `requirements.txt` 内容：**
-> ```text
-> ultralytics
-> opencv-python
-> requests
-> python-dotenv
-> ```
 
 ### 2. 准备模型
 你需要将训练好的 YOLO 模型文件（通常是 `.pt` 后缀）放入 `weights/` 文件夹中。
-*   如果没有自训练模型，可以暂时使用 YOLOv8 官方模型测试：`yolov8n.pt`。
 
 ## ⚙️ 配置说明
 
