@@ -1,5 +1,10 @@
+import threading
+
 from core.communication.feishu import FeishuNotifier
 from pathlib import Path
+from core.communication.communication import Communication
+from core.communication.communication import notifier
+from main import Main
 
 
 def test_feishu_send_alert_card():
@@ -62,6 +67,7 @@ def test_send_all_admins_alert():
     )
     assert result is True
 
+
 def test_send_all_admins_alert_sms():
     notifier = FeishuNotifier()
     current_dir = Path(__file__).resolve().parent
@@ -75,7 +81,8 @@ def test_send_all_admins_alert_sms():
     )
     assert result is True
 
-def test_send_all_admins_alert_sms():
+
+def test_send_all_admins_alert_phone():
     notifier = FeishuNotifier()
     current_dir = Path(__file__).resolve().parent
     project_root = current_dir.parent
@@ -87,3 +94,18 @@ def test_send_all_admins_alert_sms():
         urgent_type="phone"
     )
     assert result is True
+
+
+def test_send_all_admins_alert_all():
+    current_dir = Path(__file__).resolve().parent
+    project_root = current_dir.parent
+    image_path = project_root / "test_imgs" / "test1.jpg"
+    communication = Communication()
+    t = threading.Thread(target=communication.run_fire_alarm_process_feishu, args=(image_path,))
+    t.start()
+    t.join()
+
+
+def test_feishu_member():
+    print("管理员 Open IDs:", notifier.admin_ids)
+    assert len(notifier.admin_ids) > 0, "未能加载任何管理员 ID，请检查配置"
