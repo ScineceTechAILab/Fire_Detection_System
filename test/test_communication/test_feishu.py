@@ -61,3 +61,29 @@ def test_send_all_admins_alert():
         image_path=str(image_path)
     )
     assert result is True
+
+def test_send_all_admins_alert_sms():
+    notifier = FeishuNotifier()
+    current_dir = Path(__file__).resolve().parent
+    project_root = current_dir.parent
+    image_path = project_root / "test_imgs" / "test1.jpg"
+    result = notifier.send_to_all_admins(
+        title="全管理员加急单元测试",
+        content="这是发送给所有管理员的加急单元测试消息",
+        image_path=str(image_path),
+        urgent_type="sms"
+    )
+    assert result is True
+
+def test_send_all_admins_alert_sms():
+    notifier = FeishuNotifier()
+    current_dir = Path(__file__).resolve().parent
+    project_root = current_dir.parent
+    image_path = project_root / "test_imgs" / "test1.jpg"
+    result = notifier.send_to_all_admins(
+        title="全管理员加急单元测试",
+        content="这是发送给所有管理员的加急单元测试消息",
+        image_path=str(image_path),
+        urgent_type="phone"
+    )
+    assert result is True

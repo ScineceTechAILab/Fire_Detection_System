@@ -141,15 +141,50 @@ class FeishuNotifier:
             return None
 
     def buzz_message(self, message_id, user_id_list, urgent_type="app"):
+        """
+        通用加急方法
+        :param urgent_type:
+            - 'app': 应用内加急 (弹窗)
+            - 'sms': 短信加急 (应用内+短信) -> 【需要企业认证 + 额度】
+            - 'phone': 电话加急 (应用内+短信+电话) -> 【需要企业认证 + 额度】
+        """
         token = self._get_tenant_access_token()
-        url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/urgent_app"
+        url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/urgent_{urgent_type}"
         headers = {"Authorization": f"Bearer {token}"}
         params = {"user_id_type": "open_id"}
-        data = {"user_id_list": user_id_list, "urgent_type": urgent_type}
+
+        # 构造请求体
+        data = {
+            "user_id_list": user_id_list,
+            "urgent_type": urgent_type
+        }
+        self.logger.info(f"DEBUG: 正在发起加急请求 | URL: {url} | Data: {data}")
+
         try:
-            requests.patch(url, headers=headers, params=params, json=data, proxies={"http": None, "https": None})
-        except:
-            pass
+            resp = requests.patch(url, headers=headers, params=params, json=data, proxies={"http": None, "https": None})
+            res = resp.json()
+
+            if res.get("code") == 0:
+                # 记录成功日志
+                type_map = {"app": "应用内", "sms": "短信", "phone": "电话"}
+                self.logger.info(f"🚀 [{type_map.get(urgent_type)}] 加急发送成功！")
+                return True
+            else:
+                # 记录详细错误，方便排查额度问题
+                err_msg = res.get("msg")
+                err_code = res.get("code")
+                self.logger.error(f"❌ 加急失败 (Code: {err_code}): {err_msg}")
+
+                # 常见错误提示
+                if err_code == 230001:
+                    self.logger.warning("提示：请检查飞书后台是否开通了'加急'权限")
+                elif err_code == 1070003:
+                    self.logger.warning("提示：可能是加急额度不足，或管理员关闭了短信加急功能")
+
+                return False
+        except Exception:
+            self.logger.exception("加急请求网络异常")
+            return False
 
     def send_to_all_admins(self, title, content, image_path=None, urgent_type="app"):
         if not self.admin_ids:
