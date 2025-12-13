@@ -4,9 +4,13 @@ import time
 import os
 import sys
 from pathlib import Path
-from dotenv import load_dotenv
+# 【改动1】引入 dotenv_values 用于直接读取文件
+from dotenv import load_dotenv, dotenv_values
 
-# 引入日志
+# 强制关闭代理
+os.environ["NO_PROXY"] = "*"
+os.environ["no_proxy"] = "*"
+
 current_file_path = Path(__file__).resolve()
 project_root = current_file_path.parent.parent.parent
 sys.path.append(str(project_root))
@@ -16,173 +20,202 @@ from utils.logger import setup_logger
 class FeishuNotifier:
     def __init__(self, webhook_url=None):
         self.logger = setup_logger("Feishu")
-        self._load_env()
 
+        # 1. 先确定 .env 路径
+        current_dir = Path(__file__).resolve().parent
+        self.project_root = current_dir.parent.parent
+        self.env_path = self.project_root / ".env"
+
+        # 2. 加载环境变量 (用于读取 AppID 等常规配置)
+        self._load_env()
         self.headers = {'Content-Type': 'application/json'}
 
-        # 1. 基础配置
+        # 3. 基础配置
         self.webhook_url = webhook_url or os.getenv("feishuwebhook")
         self.keyword = os.getenv("feishu_keyword", "")
-
-        # 2. 图片上传需要的配置
         self.app_id = os.getenv("feishu_app_id")
         self.app_secret = os.getenv("feishu_app_secret")
 
-        if not self.app_id or not self.app_secret:
-            self.logger.warning("未配置 AppID/Secret，将无法发送图片，仅能发送文字！")
+        # 4. 自动加载管理员 ID
+        self.admin_ids = []
+        if self.app_id and self.app_secret:
+            self._auto_load_admins()
+        else:
+            self.logger.warning("未配置 AppID/Secret，无法自动加载管理员 ID")
 
     def _load_env(self):
-        # ... (和之前一样，保持不变) ...
-        current_dir = Path(__file__).resolve().parent
-        project_root = current_dir.parent.parent
-        env_path = project_root / ".env"
-        if env_path.exists():
-            load_dotenv(dotenv_path=env_path)
+        if self.env_path.exists():
+            # override=True 确保强制读取最新文件，覆盖旧缓存
+            load_dotenv(dotenv_path=self.env_path, override=True)
 
     def _get_tenant_access_token(self):
-        """
-        获取飞书 API 的访问令牌 (Tenant Access Token)
-        上传图片必须要有这个令牌
-        """
         url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-        headers = {"Content-Type": "application/json; charset=utf-8"}
-        data = {
-            "app_id": self.app_id,
-            "app_secret": self.app_secret
-        }
+        data = {"app_id": self.app_id, "app_secret": self.app_secret}
         try:
-            resp = requests.post(url, headers=headers, json=data)
-            resp_dict = resp.json()
-            if resp_dict.get("code") == 0:
-                return resp_dict.get("tenant_access_token")
-            else:
-                self.logger.error(f"获取 Token 失败: {resp_dict}")
-                return None
-        except Exception as e:
+            resp = requests.post(url, json=data, proxies={"http": None, "https": None})
+            if resp.json().get("code") == 0:
+                return resp.json().get("tenant_access_token")
+            self.logger.error(f"Token 获取失败: {resp.text}")
+            return None
+        except Exception:
             self.logger.exception("获取 Token 异常")
             return None
 
-    def upload_image(self, image_path):
-        """
-        上传本地图片到飞书，获取 image_key
-        :param image_path: 图片的本地绝对路径或相对路径
-        :return: image_key (字符串) 或 None
-        """
-        if not self.app_id:
-            self.logger.error("缺少 AppID，无法上传图片")
-            return None
+    def get_open_id_by_mobile(self, mobile):
+        """通过手机号查 User ID"""
+        if not mobile.startswith("+"):
+            mobile = f"+{mobile}"
 
-        # 1. 拿到 Token
         token = self._get_tenant_access_token()
-        if not token:
+        if not token: return None
+
+        url = "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id"
+        headers = {"Authorization": f"Bearer {token}"}
+        params = {"user_id_type": "open_id"}
+        body = {"mobiles": [mobile]}
+
+        try:
+            resp = requests.post(url, headers=headers, params=params, json=body, proxies={"http": None, "https": None})
+            data = resp.json()
+            if data.get("code") == 0:
+                user_list = data.get("data", {}).get("user_list", [])
+                if user_list:
+                    user_id = user_list[0].get("user_id")
+                    if user_id:
+                        return user_id
+
+            # 这里用 debug 级别，防止因为找不到某个手机号刷屏报错
+            self.logger.warning(f"手机号 {mobile} 未匹配到用户 (请检查应用可用范围)")
+            return None
+        except Exception:
             return None
 
-        # 2. 准备上传
-        url = "https://open.feishu.cn/open-apis/im/v1/images"
-        headers = {"Authorization": f"Bearer {token}"}  # 注意这里必须带 Token
+    def _auto_load_admins(self):
+        """
+        【修复版】直接读取 .env 文件内容，不依赖 os.environ 缓存
+        """
+        self.logger.info(f"正在从文件加载管理员: {self.env_path}")
 
-        # 3. 打开图片文件并发送
-        # multipart/form-data 格式上传
+        if not self.env_path.exists():
+            self.logger.error("❌ 找不到 .env 文件！")
+            return
+
+        # 【关键修复】使用 dotenv_values 直接把文件读成字典
+        # 这样绝对能读到你刚写的 admin_phone1
+        env_config = dotenv_values(self.env_path)
+
+        count = 0
+        for key, value in env_config.items():
+            # 只要 key 是以 admin_phone 开头的
+            if key.startswith("admin_phone") and value:
+                self.logger.info(f"发现配置 [{key}: {value}]，正在去飞书查询 ID...")
+
+                user_id = self.get_open_id_by_mobile(value)
+
+                if user_id:
+                    if user_id not in self.admin_ids:
+                        self.admin_ids.append(user_id)
+                        count += 1
+                        self.logger.info(f"✅ 管理员 {key} 添加成功 (ID: {user_id})")
+                else:
+                    self.logger.error(f"❌ 管理员 {key} 查询失败 (可能未发布版本或不在可用范围)")
+
+        self.logger.info(f"管理员加载完毕，共 {count} 人")
+
+    # --- 下面是发送逻辑 (保持不变) ---
+    def upload_image(self, image_path):
+        if not self.app_id: return None
+        token = self._get_tenant_access_token()
+        if not token: return None
+        url = "https://open.feishu.cn/open-apis/im/v1/images"
+        headers = {"Authorization": f"Bearer {token}"}
         try:
             with open(image_path, 'rb') as f:
                 image_data = f.read()
-
-            files = {
-                'image_type': (None, 'message'),
-                'image': image_data
-            }
-
-            self.logger.info(f"正在上传图片: {image_path}")
-            resp = requests.post(url, headers=headers, files=files)
-            result = resp.json()
-
-            if result.get("code") == 0:
-                image_key = result.get("data", {}).get("image_key")
-                self.logger.info(f"图片上传成功，Key: {image_key}")
-                return image_key
-            else:
-                self.logger.error(f"图片上传失败: {result}")
-                return None
-
-        except FileNotFoundError:
-            self.logger.error(f"找不到图片文件: {image_path}")
+            files = {'image_type': (None, 'message'), 'image': image_data}
+            resp = requests.post(url, headers=headers, files=files, proxies={"http": None, "https": None})
+            if resp.json().get("code") == 0:
+                return resp.json().get("data", {}).get("image_key")
             return None
-        except Exception as e:
-            self.logger.exception("上传图片过程发生异常")
+        except Exception:
             return None
 
-    def send_alert_card(self, title, content, image_path=None):
-        """
-        发送报警卡片 (支持带图片)
-        :param image_path: 本地图片路径，如果不传就不发图
-        """
-        if not self.webhook_url:
+    def buzz_message(self, message_id, user_id_list, urgent_type="app"):
+        token = self._get_tenant_access_token()
+        url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/urgent_app"
+        headers = {"Authorization": f"Bearer {token}"}
+        params = {"user_id_type": "open_id"}
+        data = {"user_id_list": user_id_list, "urgent_type": urgent_type}
+        try:
+            requests.patch(url, headers=headers, params=params, json=data, proxies={"http": None, "https": None})
+        except:
+            pass
+
+    def send_to_all_admins(self, title, content, image_path=None, urgent_type="app"):
+        if not self.admin_ids:
+            self.logger.error("❌ 没有可用的管理员 ID，无法发送消息！请检查 .env 配置")
             return False
+
+        shared_image_key = None
+        if image_path:
+            shared_image_key = self.upload_image(image_path)
+            if not shared_image_key:
+                self.logger.warning("图片上传失败，将降级为纯文字报警")
+
+        success_count = 0
+        self.logger.info(f"开始向 {len(self.admin_ids)} 位管理员发送报警...")
+
+        for user_id in self.admin_ids:
+            success = self._send_single_card(title, content, user_id, shared_image_key, urgent_type)
+            if success:
+                success_count += 1
+
+        self.logger.info(f"群发任务结束: 成功 {success_count}/{len(self.admin_ids)}")
+        return success_count > 0
+
+    def _send_single_card(self, title, content, receiver_id, image_key, urgent_type):
+        token = self._get_tenant_access_token()
+        if not token: return False
 
         time_str = time.strftime("%Y-%m-%d %H:%M:%S")
         final_title = f"【{self.keyword}】{title}" if self.keyword else title
+        elements = [{"tag": "div", "text": {"content": f"**时间**: {time_str}\n**详情**: {content}", "tag": "lark_md"}}]
 
-        # --- 核心改动：构建卡片元素 ---
-        elements = [
-            {
-                "tag": "div",
-                "text": {
-                    "content": f"**检测时间**: {time_str}\n**详细情况**: {content}",
-                    "tag": "lark_md"
-                }
-            }
-        ]
+        if image_key:
+            elements.append({"tag": "img", "img_key": image_key, "alt": {"content": "现场图", "tag": "plain_text"}})
 
-        # 如果传入了图片路径，先上传，拿到 Key，再把图片元素塞进卡片里
-        if image_path:
-            image_key = self.upload_image(image_path)
-            if image_key:
-                elements.append({
-                    "tag": "img",  # 图片组件
-                    "img_key": image_key,
-                    "alt": {
-                        "content": "现场截图",
-                        "tag": "plain_text"
-                    }
-                })
-            else:
-                # 如果上传失败，追加一行文字提示，不要让整个报警失败
-                elements.append({
-                    "tag": "div",
-                    "text": {"content": "⚠️ (图片上传失败，请检查日志)", "tag": "lark_md"}
-                })
-
-        # 追加分割线和提示
         elements.append({"tag": "hr"})
-        elements.append({"tag": "note", "elements": [{"content": "请立即响应！", "tag": "plain_text"}]})
+        elements.append({"tag": "note", "elements": [{"content": "系统自动加急报警", "tag": "plain_text"}]})
 
-        data = {
-            "msg_type": "interactive",
-            "card": {
-                "header": {
-                    "template": "red",
-                    "title": {"content": f"🔥 {final_title}", "tag": "plain_text"}
-                },
-                "elements": elements
-            }
+        card_content = {
+            "header": {"template": "red", "title": {"content": f"🔥 {final_title}", "tag": "plain_text"}},
+            "elements": elements
         }
-        return self._post(data)
 
-    def _post(self, data):
+        url = "https://open.feishu.cn/open-apis/im/v1/messages"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        params = {"receive_id_type": "open_id"}
+        body = {
+            "receive_id": receiver_id,
+            "msg_type": "interactive",
+            "content": json.dumps(card_content)
+        }
+
         try:
-            self.logger.debug(f"正在发送请求，Payload摘要: {str(data)[:100]}...")
-            response = requests.post(self.webhook_url, headers=self.headers, data=json.dumps(data), timeout=5)
-            result = response.json()
-
-            if result.get("code") == 0:
-                self.logger.info("✅ 消息发送成功")
+            resp = requests.post(url, headers=headers, params=params, json=body, proxies={"http": None, "https": None})
+            res = resp.json()
+            if res.get("code") == 0:
+                msg_id = res.get("data", {}).get("message_id")
+                self.buzz_message(msg_id, [receiver_id], urgent_type)
                 return True
             else:
-                # 如果失败，通常就是关键词没对上
-                self.logger.error(f"❌ 发送失败 (Code: {result.get('code')}): {result.get('msg')}")
+                self.logger.error(f"发送给 {receiver_id} 失败: {res}")
                 return False
         except Exception as e:
-            self.logger.exception("网络请求异常")
+            self.logger.error(f"发送异常: {e}")
             return False
 
 
+if __name__ == "__main__":
+    notifier = FeishuNotifier()
+    print(f"DEBUG: 最终管理员 ID 列表: {notifier.admin_ids}")

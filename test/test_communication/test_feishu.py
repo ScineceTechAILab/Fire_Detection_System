@@ -34,3 +34,30 @@ def test_send_image_alert():
     )
 
     assert result is True
+
+
+# 测试加急图片消息发送
+# def test_send_image_alert_urge():
+#     notifier = FeishuNotifier()
+#     current_dir = Path(__file__).resolve().parent
+#     project_root = current_dir.parent
+#     image_path = project_root / "test_imgs" / "test1.jpg"
+#     notifier.send_card_and_urgent(
+#         title="加急单元测试",
+#         content="这是加急单元测试",
+#         receiver_open_id="ou_913d65a4c53ced131746da62d163efa3",
+#         image_path=str(image_path)
+#     )
+
+
+def test_send_all_admins_alert():
+    notifier = FeishuNotifier()
+    current_dir = Path(__file__).resolve().parent
+    project_root = current_dir.parent
+    image_path = project_root / "test_imgs" / "test1.jpg"
+    result = notifier.send_to_all_admins(
+        title="全管理员加急单元测试",
+        content="这是发送给所有管理员的加急单元测试消息",
+        image_path=str(image_path)
+    )
+    assert result is True

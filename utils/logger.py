@@ -2,6 +2,7 @@
 import logging
 import sys
 
+
 # 使用方法 : self.logger = setup_logger("Feishu") 像这样创建实例,然后使用,需要先导入这个logger模块
 def setup_logger(name):
     """
